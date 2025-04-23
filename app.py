@@ -252,3 +252,39 @@ with tab_r:
         st.info('No Reddit posts.')
     else:
         st.dataframe(posts_df, hide_index=True, use_container_width=True) 
+        
+# ── Friendly explanation  ---------------------------------
+    explanation_parts = []
+
+    # Technical side
+    if tech > 0:
+        explanation_parts.append(
+            f"Technical indicators are net **bullish** *(+{tech:.1f})*."
+        )
+    elif tech < 0:
+        explanation_parts.append(
+            f"Technical indicators are net **bearish** *({tech:.1f})*."
+        )
+    else:
+        explanation_parts.append("Technical indicators are **neutral** *(0)*.")
+
+    # Sentiment side
+    if sent_val > 0.05:
+        explanation_parts.append(
+            f"Reddit sentiment is **positive** *(+{sent_val:.2f})*."
+        )
+    elif sent_val < -0.05:
+        explanation_parts.append(
+            f"Reddit sentiment is **negative** *({sent_val:.2f})*."
+        )
+    else:
+        explanation_parts.append("Reddit sentiment is **neutral**.")
+
+    # Blend comment
+    explanation_parts.append(
+        f"Blending **{tech_w}%** technical with **{sent_w}%** sentiment "
+        f"yields a combined score of **{blend:.2f}**, → **{ver}** signal."
+    )
+
+    # Render paragraph
+    st.markdown(" ".join(explanation_parts), unsafe_allow_html=True)
