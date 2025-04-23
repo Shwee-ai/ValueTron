@@ -9,7 +9,7 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from streamlit_autorefresh import st_autorefresh
 
 # ─── 1.  PAGE CONFIG MUST BE FIRST ───────────────────────────────
-st.set_page_config(page_title="📈 ValueTron",
+set_page_config(page_title="📈 ValueTron",
                    page_icon="⚡️",
                    layout="wide")
 
