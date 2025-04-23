@@ -56,7 +56,6 @@ st_autorefresh(interval=30 * 60 * 1000, key="reload")  # reload every 30 min
 # ─── SIDEBAR ───────────────────────────────────────────────────────
 with st.sidebar:
     tf     = st.selectbox("Timeframe", ["1W","1M","6M","YTD","1Y"], index=1)
-    label_list = [f"{sym} ({FULLNAME[sym]})" for sym in TICKERS]
     tkr    = st.selectbox("Ticker", TICKERS, index=0)
     tech_w = st.slider("Technical Weight %", 0, 100, 60)
     sent_w = 100 - tech_w
