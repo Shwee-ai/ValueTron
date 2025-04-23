@@ -1,21 +1,21 @@
 # ─────────────────────────  ValueTron  ──────────────────────────
 # single-file Streamlit dash (ticker TA + Reddit sentiment)
 
-import os, time, pathlib, base64, datetime as dt, requests
+import base64, pathlib, os, time, datetime as dt, requests
 import pandas as pd, numpy as np, yfinance as yf, streamlit as st
 import plotly.graph_objects as go
 from textblob import TextBlob
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from streamlit_autorefresh import st_autorefresh
 
-# ─── 1 ▸ PAGE CONFIG  ────────────────────────────────────────────
+# ─── 1.  PAGE CONFIG  (must be the very first Streamlit call) ────
 st.set_page_config(
     page_title="📈 ValueTron",
     page_icon="⚡️",
-    layout="wide",
+    layout="wide"
 )
 
-# ─── 2 ▸ TRON BACKGROUND  ────────────────────────────────────────
+# ─── 2.  TRON BACKGROUND  (lighter overlay, 80 % opacity) ────────
 img_path = pathlib.Path("tron.png")
 if img_path.exists():
     b64 = base64.b64encode(img_path.read_bytes()).decode()
@@ -23,15 +23,21 @@ if img_path.exists():
         f"""
         <style>
         body, .stApp {{
-            background:
-              linear-gradient(rgba(0,0,0,0.80), rgba(0,0,0,0.80)),
-              url("data:image/png;base64,{b64}") center/cover fixed no-repeat;
+            background: linear-gradient(rgba(0,0,0,0.80), rgba(0,0,0,0.80)),
+                        url("data:image/png;base64,{b64}") center/cover fixed no-repeat;
         }}
-        header, footer {{visibility: hidden;}}
+        header, footer {{visibility:hidden;}}
         </style>
         """,
-        unsafe_allow_html=True,
+        unsafe_allow_html=True
     )
+
+# ─── 3.  APP TITLE + AUTO-REFRESH  ───────────────────────────────
+st.markdown(
+    "<h1 style='text-align:center'>⚡️ ValueTron</h1>",
+    unsafe_allow_html=True
+)
+st_autorefresh(interval=30 * 60 * 1000, key="reload")   # full reload every 30 min
 
 # ─── 3 ▸ CONSTANTS & CONFIG  ─────────────────────────────────────
 TICKERS = [
