@@ -94,53 +94,62 @@ def fundamentals(tkr):
     return dict(pe=pe, de=de, ev=ev)
 
 # -------- reddit ---------- (new, uses .json + Pushshift)
-# ------------------------------------------------------------------
-#   WORKS EVEN WHEN api.reddit.com RETURNS 403
-# ------------------------------------------------------------------
 @st.cache_data(ttl=CACHE_TTL)
 def reddit_sentiment(tkr: str):
     """
-    Pull latest 25 + 25 posts that mention <tkr> or $<tkr> from
-    /r/stocks, /r/investing, /r/wallstreetbets via Pushshift.
-    Returns (avg_score, letter_rating, DataFrame[title, score])
+    Robust 3-layer fetch:
+       1) Pushshift (with `after=7d`)      – primary
+       2) Reddit search.json (no login)    – backup
+       3) Return (0,"B") if both fail
     """
-    base_url = "https://api.pushshift.io/reddit/search/submission/"
-    subs     = "stocks,investing,wallstreetbets"
-    rows     = []
+    subs  = "stocks,investing,wallstreetbets"
+    rows  = []
 
-    for q in (tkr, f"${tkr}"):                 # plain & $symbol separately
-        try:
-            resp = requests.get(
-                base_url,
-                params={
-                    "q": q,
-                    "subreddit": subs,
-                    "sort": "desc",
-                    "size": 25,                # 25 each → 50 total
-                },
-                timeout=10,
-            )
-            data = resp.json().get("data", [])
-        except Exception as e:
-            st.warning(f"Pushshift fetch failed for query '{q}': {e}")
-            data = []
-
+    # ---------- 1) Pushshift -------------------------------------------------
+    try:
+        url_ps = (
+            "https://api.pushshift.io/reddit/search/submission/"
+            f"?q={tkr}|${tkr}"
+            f"&subreddit={subs}"
+            "&after=7d&sort=desc&size=50"
+        )
+        data = requests.get(url_ps, timeout=10).json().get("data", [])
         rows += [
-            {
-                "title":  d.get("title", ""),
-                "text":   d.get("selftext", ""),
-                "score":  d.get("score", 0),
-            }
+            {"title": d.get("title", ""),
+             "text":  d.get("selftext", ""),
+             "score": d.get("score", 0)}
             for d in data
         ]
+    except Exception as e:
+        st.warning(f"Pushshift failed: {e}")
 
-    # ── no matches at all ───────────────────────────────────────────
+    # ---------- 2) Reddit search.json (fallback) -----------------------------
+    if not rows:
+        for q in (tkr, f"${tkr}"):
+            url_rd = (
+                "https://www.reddit.com/search.json"
+                f"?q={q}&restrict_sr=on&limit=25"
+                f"&sort=new&type=link&raw_json=1"
+            )
+            try:
+                js = requests.get(url_rd, headers={"User-Agent":"QuantDash/0.2"},
+                                  timeout=10).json()
+                rows += [
+                    {"title": c["data"]["title"],
+                     "text":  c["data"].get("selftext",""),
+                     "score": c["data"].get("score",0)}
+                    for c in js.get("data", {}).get("children", [])
+                    if c.get("data")
+                ]
+            except Exception as e:
+                st.warning(f"reddit.com search failed for {q}: {e}")
+
+    # ---------- 3) nothing found --------------------------------------------
     if not rows:
         return 0.0, "B", pd.DataFrame()
 
-    # ── sentiment scoring ───────────────────────────────────────────
+    # ---------- sentiment scoring -------------------------------------------
     sia = SentimentIntensityAnalyzer()
-
     def hybrid(r):
         txt   = f'{r["title"]} {r["text"]}'
         base  = (TextBlob(txt).sentiment.polarity +
