@@ -95,50 +95,68 @@ def fundamentals(tkr):
 
 # -------- reddit ---------- (new, uses .json + Pushshift)
 # ------------------------------------------------------------------
-# Replace the previous reddit_sentiment() with this Pushshift-only one
+#   WORKS EVEN WHEN api.reddit.com RETURNS 403
 # ------------------------------------------------------------------
 @st.cache_data(ttl=CACHE_TTL)
 def reddit_sentiment(tkr: str):
     """
-    Pull last 50 posts that mention the ticker (plain or $ticker) from
+    Pull latest 25 + 25 posts that mention <tkr> or $<tkr> from
     /r/stocks, /r/investing, /r/wallstreetbets via Pushshift.
-    Works without Reddit API quota and rarely returns 429/403.
-    Returns: (avg_score, letter_rating, DataFrame[title, score])
+    Returns (avg_score, letter_rating, DataFrame[title, score])
     """
-    url = (
-        "https://api.pushshift.io/reddit/search/submission/"
-        f"?q=\"{tkr}\"|\"${tkr}\""
-        "&subreddit=stocks,investing,wallstreetbets"
-        "&sort=desc&size=50"
-    )
-    try:
-        data = requests.get(url, timeout=10).json().get("data", [])
-    except Exception as e:
-        st.warning(f"Pushshift fetch failed: {e}")
+    base_url = "https://api.pushshift.io/reddit/search/submission/"
+    subs     = "stocks,investing,wallstreetbets"
+    rows     = []
+
+    for q in (tkr, f"${tkr}"):                 # plain & $symbol separately
+        try:
+            resp = requests.get(
+                base_url,
+                params={
+                    "q": q,
+                    "subreddit": subs,
+                    "sort": "desc",
+                    "size": 25,                # 25 each → 50 total
+                },
+                timeout=10,
+            )
+            data = resp.json().get("data", [])
+        except Exception as e:
+            st.warning(f"Pushshift fetch failed for query '{q}': {e}")
+            data = []
+
+        rows += [
+            {
+                "title":  d.get("title", ""),
+                "text":   d.get("selftext", ""),
+                "score":  d.get("score", 0),
+            }
+            for d in data
+        ]
+
+    # ── no matches at all ───────────────────────────────────────────
+    if not rows:
         return 0.0, "B", pd.DataFrame()
 
-    if not data:
-        return 0.0, "B", pd.DataFrame()
-
+    # ── sentiment scoring ───────────────────────────────────────────
     sia = SentimentIntensityAnalyzer()
 
-    def hybrid(row):
-        txt   = f'{row.get("title","")} {row.get("selftext","")}'
+    def hybrid(r):
+        txt   = f'{r["title"]} {r["text"]}'
         base  = (TextBlob(txt).sentiment.polarity +
                  sia.polarity_scores(txt)["compound"]) / 2
-        return base * min(row.get("score", 0), 100) / 100
+        return base * min(r["score"], 100) / 100
 
-    scores = [hybrid(r) for r in data]
+    scores = [hybrid(r) for r in rows]
     avg    = sum(scores) / len(scores)
-    rating = "A" if avg > 0.2 else "C" if avg < -0.2 else "B"
+    rating = "A" if avg > 0.20 else "C" if avg < -0.20 else "B"
 
-    df = pd.DataFrame({
-        "title":  [d.get("title","")  for d in data],
-        "score":  [d.get("score",0)   for d in data]
-    })
+    df = pd.DataFrame(
+        {"title": [r["title"] for r in rows],
+         "score": [r["score"] for r in rows]}
+    )
 
     return avg, rating, df
-
 
 # ---- helper calls (must precede scoring) ----
 fund = fundamentals(tkr)
