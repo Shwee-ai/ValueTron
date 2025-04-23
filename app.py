@@ -1,17 +1,4 @@
 import base64, pathlib, streamlit as st  # put these at the very top
-import os, time
-import datetime as dt
-import requests
-import pandas as pd
-import numpy as np
-import yfinance as yf
-import streamlit as st
-import plotly.graph_objects as go
-from textblob import TextBlob
-from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-from streamlit_autorefresh import st_autorefresh
-
-
 # ─── PAGE CONFIG (must remain first Streamlit call) ────────────────
 st.set_page_config(page_title="📈 ValueTron",
                    page_icon="⚡️",
@@ -35,6 +22,20 @@ if img_path.exists():
     footer {{visibility:hidden;}}
     </style>
     """, unsafe_allow_html=True)
+import os, time
+import datetime as dt
+import requests
+import pandas as pd
+import numpy as np
+import yfinance as yf
+import streamlit as st
+import plotly.graph_objects as go
+from textblob import TextBlob
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+from streamlit_autorefresh import st_autorefresh
+
+
+
 
 # ─── CONFIG ────────────────────────────────────────────────────────
 TICKERS = ["NVDA","AMD","ADBE","VRTX","SCHW",
