@@ -104,7 +104,7 @@ def fundamentals(tkr):
 # ─────────── WSJ sentiment via NewsAPI ─────────────────────────────
 @st.cache_data(ttl=CACHE_TTL)
 def news_sentiment(tkr: str):
-    key = st.secrets.get("NEWSAPI_KEY", "")
+    key = st.secrets.get("NEWSAPI_KEY", "f927b70db70a46cba0b04974864e181d")
     if not key:
         st.warning("NEWSAPI_KEY not found in secrets.")
         return 0.0, "B", pd.DataFrame()
