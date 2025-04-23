@@ -93,40 +93,48 @@ try:
 except: df_posts = pd.DataFrame()
 
 # ─── 2 · price + indicators (bullet-proof) ─────────────────────────
-@st.cache_data(ttl=PRICE_TTL)
-def load_price(sym: str, start: dt.date, end: dt.date):
-    raw = yf.download(sym, start=start, end=end+dt.timedelta(days=1), progress=False)
-    if raw.empty: return None
+# ─── bullet-proof price loader  ───────────────────────────────────
+@st.cache_data(ttl=900)          # 15-minute cache
+def load_price(sym: str, start: datetime.date, end: datetime.date):
+    """
+    yfinance -> flat columns -> choose first 'close'-type column
+    Guarantees an 'Adj Close' column, so downstream code never fails.
+    """
+    raw = yf.download(sym, start=start, end=end + dt.timedelta(days=1),
+                      progress=False, auto_adjust=False)
 
-    # flatten any MultiIndex
+    if raw.empty:
+        return None
+
+    # 1️⃣  Flatten a MultiIndex (if any) by keeping the field only
     if isinstance(raw.columns, pd.MultiIndex):
-        raw.columns = raw.columns.map(lambda x: x[1])  # keep the field only
-    raw.columns = raw.columns.str.strip()
+        raw.columns = raw.columns.map(lambda x: x[1])
 
-    # normalise to lowercase keys for lookup
-    lc_map = {c.lower().replace(" ", ""): c for c in raw.columns}
+    # 2️⃣  Normalise column names to lower-case, no spaces
+    raw.columns = raw.columns.str.replace(" ", "").str.lower()
+
+    # 3️⃣  Pick the first column whose name contains the word 'close'
+    close_cols = [c for c in raw.columns if "close" in c]
+    if close_cols:
+        base = close_cols[0]               # e.g. 'adjclose', 'close*', 'close'
+    else:                                  # exotic case: fall back to first numeric
+        base = raw.select_dtypes("number").columns[0]
+
     df = raw.copy()
+    df["Adj Close"] = df[base]             # canonical column for the rest of the app
 
-    # choose best available close column
-    if "adjclose" in lc_map:
-        base_col = lc_map["adjclose"]
-    elif "close*" in lc_map:
-        base_col = lc_map["close*"]
-    elif "close" in lc_map:
-        base_col = lc_map["close"]
-    else:                                 # fallback to the 3rd numeric column
-        base_col = df.select_dtypes("number").columns[2]
-
-    df["Adj Close"] = df[base_col]
-
-    # indicators
+    # 4️⃣  Technical indicators
     df["SMA_20"] = df["Adj Close"].rolling(20).mean()
     df["MACD"]   = df["Adj Close"].ewm(12).mean() - df["Adj Close"].ewm(26).mean()
+
     delta = df["Adj Close"].diff()
-    rs    = delta.clip(lower=0).rolling(14).mean() / (-delta.clip(upper=0).rolling(14).mean()).replace(0,np.nan)
-    df["RSI"] = 100 - 100/(1+rs)
+    rs    = (delta.clip(lower=0).rolling(14).mean() /
+             (-delta.clip(upper=0).rolling(14).mean()).replace(0, np.nan))
+    df["RSI"] = 100 - 100/(1 + rs)
+
     std = df["Adj Close"].rolling(20).std()
-    df["BB_Upper"] = df["SMA_20"] + 2*std; df["BB_Lower"] = df["SMA_20"] - 2*std
+    df["BB_Upper"] = df["SMA_20"] + 2*std
+    df["BB_Lower"] = df["SMA_20"] - 2*std
     return df
 
 today = dt.date.today()
