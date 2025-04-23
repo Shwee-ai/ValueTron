@@ -1,7 +1,7 @@
 # ────────────────────────────────────────────────────────────────────
-#  Quant-Sentiment  Dashboard   –  single-file Streamlit app
-#  Reliable version: Pushshift-only Reddit fetch (no OAuth needed)
-#  © 2025  –  paste this entire file into app.py   (Python ≥ 3.9)
+#   ValueTron / Quant-Sentiment Dashboard
+#   v2 – WSJ (NewsAPI) sentiment instead of Reddit
+#   paste this file as app.py
 # ────────────────────────────────────────────────────────────────────
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
@@ -10,55 +10,53 @@ import yfinance as yf, datetime as dt, requests, os, base64, textwrap
 from textblob import TextBlob
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
-# ───────────── config — edit here if you like ───────────────────────
+# ─────────── configuration ─────────────────────────────────────────
 TICKERS    = ["NVDA","AAPL","MSFT","TSLA","AMD",
               "ADBE","SCHW","DE","FANG","PLTR"]
-REFRESH_MS = 1_800_000          # full page auto-refresh: 30 min
-CACHE_TTL  = 900                # price & reddit cache: 15 min
+REFRESH_MS = 1_800_000          # auto-refresh every 30 min
+CACHE_TTL  = 900                # price + news cache 15 min
 
-# ───────────── page style & optional background image ───────────────
+# ─────────── page style (optional Tron background) ─────────────────
 st.set_page_config("⚡️ Quant Sentiment", "📈", layout="wide")
 if os.path.exists("tron.png"):
     bg = base64.b64encode(open("tron.png","rb").read()).decode()
     st.markdown(textwrap.dedent(f"""
         <style>
           body,.stApp{{
-              background:
-                linear-gradient(rgba(0,0,0,.9),rgba(0,0,0,.9)),
-                url("data:image/png;base64,{bg}") center/cover fixed;
-              color:#fff;font-family:Arial}}
+            background:
+              linear-gradient(rgba(0,0,0,.9),rgba(0,0,0,.9)),
+              url("data:image/png;base64,{bg}") center/cover fixed;
+            color:#fff;font-family:Arial}}
           h1{{color:#0ff;text-align:center;text-shadow:0 0 6px #0ff}}
           .stSidebar{{background:rgba(0,0,30,.93);border-right:2px solid #0ff}}
-        </style>
-    """), unsafe_allow_html=True)
+        </style>"""), unsafe_allow_html=True)
 
 st.markdown("<h1>⚡️ Quant Sentiment Dashboard</h1>", unsafe_allow_html=True)
-st_autorefresh(interval=REFRESH_MS, key="auto_refresh")
+st_autorefresh(interval=REFRESH_MS, key="refresh")
 
-# ───────────── sidebar ──────────────────────────────────────────────
+# ─────────── sidebar ───────────────────────────────────────────────
 with st.sidebar:
     st.header("Configuration")
-    tf  = st.selectbox("Timeframe", ["1W","1M","6M","YTD","1Y"], 1)
-    tkr = st.selectbox("Ticker", TICKERS, 0)
+    tf  = st.selectbox("Timeframe", ["1W","1M","6M","YTD","1Y"], index=1)
+    tkr = st.selectbox("Ticker", TICKERS, index=0)
     tech_w = st.slider("Technical Weight %", 0, 100, 60)
     sent_w = 100 - tech_w
-    # technical indicators
-    show_sma  = st.checkbox("SMA-20",         True)
-    show_macd = st.checkbox("MACD",           True)
-    show_rsi  = st.checkbox("RSI",            True)
-    show_bb   = st.checkbox("Bollinger Bands",True)
+
+    show_sma  = st.checkbox("SMA-20",          True)
+    show_macd = st.checkbox("MACD",            True)
+    show_rsi  = st.checkbox("RSI",             True)
+    show_bb   = st.checkbox("Bollinger Bands", True)
     st.markdown("---")
-    # fundamental ratios
-    show_pe = st.checkbox("P/E ratio",        True)
-    show_de = st.checkbox("Debt / Equity",    True)
-    show_ev = st.checkbox("EV / EBITDA",      True)
+    show_pe   = st.checkbox("P/E ratio",       True)
+    show_de   = st.checkbox("Debt / Equity",   True)
+    show_ev   = st.checkbox("EV / EBITDA",     True)
 
-# ───────────── date range ───────────────────────────────────────────
+# ─────────── date range helper ─────────────────────────────────────
 today = dt.date.today()
-delta = {"1W":7,"1M":30,"6M":180,"1Y":365}.get(tf,365)
-start = dt.date(today.year,1,1) if tf=="YTD" else today - dt.timedelta(days=delta)
+delta_days = {"1W":7,"1M":30,"6M":180,"1Y":365}.get(tf, 365)
+start = dt.date(today.year,1,1) if tf=="YTD" else today - dt.timedelta(days=delta_days)
 
-# ───────────── price & indicators ───────────────────────────────────
+# ─────────── price & technical indicators ──────────────────────────
 @st.cache_data(ttl=CACHE_TTL)
 def load_price(tkr, start, end):
     raw = yf.download(tkr, start=start, end=end+dt.timedelta(days=1),
@@ -86,7 +84,7 @@ price = price.dropna(subset=["Adj Close"])
 if price.empty:   st.error("Not enough rows."); st.stop()
 last = price.iloc[-1]
 
-# ───────────── fundamentals (P/E, D/E, EV/EBITDA) ───────────────────
+# ─────────── fundamentals (yfinance) ───────────────────────────────
 @st.cache_data(ttl=86_400)
 def fundamentals(tkr):
     finfo = yf.Ticker(tkr).fast_info or {}
@@ -103,64 +101,51 @@ def fundamentals(tkr):
             pass
     return dict(pe=pe, de=de, ev=ev)
 
-# ───────────── Reddit sentiment (Pushshift only, robust) ────────────
+# ─────────── WSJ sentiment via NewsAPI ─────────────────────────────
 @st.cache_data(ttl=CACHE_TTL)
-def reddit_sentiment(tkr: str):
-    """
-    Fetch latest 50 posts that mention the ticker (plain or $ticker)
-    from /r/stocks, /r/investing, /r/wallstreetbets via Pushshift.
-    """
-    subs  = ["stocks", "investing", "wallstreetbets"]
-    posts = []
+def news_sentiment(tkr: str):
+    key = st.secrets.get("NEWSAPI_KEY", "")
+    if not key:
+        st.warning("NEWSAPI_KEY not found in secrets.")
+        return 0.0, "B", pd.DataFrame()
 
-    base = "https://api.pushshift.io/reddit/search/submission/"
-    for sub in subs:
-        for q in (tkr, f"${tkr}"):            # two queries per subreddit
-            params = {
-                "q": q,
-                "subreddit": sub,
-                "after": "7d",
-                "sort": "desc",
-                "size": 25
-            }
-            try:
-                data = requests.get(base, params=params, timeout=10).json().get("data", [])
-                posts += [
-                    {
-                        "title": d.get("title", ""),
-                        "text":  d.get("selftext", ""),
-                        "score": d.get("score", 0)
-                    }
-                    for d in data
-                ]
-            except Exception as e:
-                st.warning(f"Pushshift failed {sub} {q}: {e}")
+    url = "https://newsapi.org/v2/everything"
+    params = {
+        "q": tkr,
+        "domains": "wsj.com",     # Wall Street Journal only
+        "pageSize": 50,
+        "sortBy": "publishedAt",
+        "apiKey": key
+    }
+    try:
+        data = requests.get(url, params=params, timeout=10).json()
+        articles = data.get("articles", [])
+    except Exception as e:
+        st.warning(f"News fetch failed: {e}")
+        articles = []
 
-    if not posts:
-        return 0.0, "B", pd.DataFrame()       # harmless defaults
+    if not articles:
+        return 0.0, "B", pd.DataFrame()
 
     sia = SentimentIntensityAnalyzer()
 
-    def hybrid(r):
-        txt   = f"{r['title']} {r['text']}"
-        base  = (TextBlob(txt).sentiment.polarity +
-                 sia.polarity_scores(txt)["compound"]) / 2
-        return base * min(r["score"], 100) / 100
+    def hybrid(txt):
+        base = (TextBlob(txt).sentiment.polarity +
+                sia.polarity_scores(txt)["compound"]) / 2
+        return base
 
-    scores = [hybrid(r) for r in posts]
+    rows = [{"title": a["title"], "source": a["source"]["name"]} for a in articles]
+    scores = [hybrid(r["title"]) for r in rows]
     avg    = sum(scores) / len(scores)
     rating = "A" if avg > 0.20 else "C" if avg < -0.20 else "B"
 
-    df = pd.DataFrame(
-        {"title": [r["title"] for r in posts],
-         "score": [r["score"] for r in posts]}
-    )
+    df = pd.DataFrame(rows)
     return avg, rating, df
 
 fund = fundamentals(tkr)
-sent_val, sent_rating, df_posts = reddit_sentiment(tkr)
+sent_val, sent_rating, df_posts = news_sentiment(tkr)
 
-# ───────────── scoring logic ────────────────────────────────────────
+# ─────────── scoring  (same logic as before) ───────────────────────
 tech = 0.0
 if show_sma  and "SMA_20" in last: tech += 1 if last["Adj Close"]>last["SMA_20"] else -1
 if show_macd and "MACD"   in last: tech += 1 if last["MACD"]>0 else -1
@@ -169,16 +154,16 @@ if show_bb   and {"BB_Upper","BB_Lower"}.issubset(last.index):
     if last["Adj Close"]>last["BB_Upper"]: tech += 0.5
     if last["Adj Close"]<last["BB_Lower"]: tech -= 0.5
 
-if show_pe and not np.isnan(fund["pe"]): tech += 1   if fund["pe"]<18   else -1
-if show_de and not np.isnan(fund["de"]): tech += 0.5 if fund["de"]<1    else -0.5
-if show_ev and not np.isnan(fund["ev"]): tech += 1   if fund["ev"]<12   else -1
+if show_pe and not np.isnan(fund["pe"]): tech += 1   if fund["pe"]<18 else -1
+if show_de and not np.isnan(fund["de"]): tech += 0.5 if fund["de"]<1  else -0.5
+if show_ev and not np.isnan(fund["ev"]): tech += 1   if fund["ev"]<12 else -1
 
 blend = tech_w/100 * tech + sent_w/100 * sent_val
 ver, color = ("BUY","springgreen") if blend>2 else ("SELL","salmon") if blend<-2 else ("HOLD","khaki")
 
-# ───────────── UI tabs ──────────────────────────────────────────────
-tab_v, tab_ta, tab_f, tab_r = st.tabs(
-    ["🏁 Verdict","📈 Technical","📊 Fundamentals","🗣️ Reddit"])
+# ─────────── UI tabs ───────────────────────────────────────────────
+tab_v, tab_ta, tab_f, tab_n = st.tabs(
+    ["🏁 Verdict","📈 Technical","📊 Fundamentals","📰 News"])
 
 with tab_v:
     st.header("Overall Verdict")
@@ -220,12 +205,9 @@ with tab_f:
         "Value":  [fund["pe"], fund["de"], fund["ev"]]
     }).set_index("Metric"))
 
-with tab_r:
-    st.header("Latest Reddit Mentions")
-
-    if not df_posts.empty:          # show table only when we have rows
-        st.dataframe(
-            df_posts,
-            hide_index=True,
-            use_container_width=True
-        )
+with tab_n:
+    st.header("Latest Wall Street Journal Headlines")
+    if df_posts.empty:
+        st.info("No recent WSJ articles for this ticker.")
+    else:
+        st.dataframe(df_posts, hide_index=True, use_container_width=True)
