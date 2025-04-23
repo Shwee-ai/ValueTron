@@ -1,6 +1,6 @@
 # ═══════════════════════════════════════════════════════════════════
-#  Quant-Sentiment Dashboard  –  all-in-one version
-#  • fetch Reddit  • score sentiment  • cache CSVs  • Streamlit UI
+#  Quant-Sentiment Dashboard – Reddit-only (no presets)
+#  Combine: fetch ▶︎ score ▶︎ CSV ▶︎ Streamlit UI
 # ═══════════════════════════════════════════════════════════════════
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
@@ -9,17 +9,21 @@ import yfinance as yf, datetime as dt, requests, os, time, base64, textwrap
 from textblob import TextBlob
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
-# ─── configuration ────────────────────────────────────────────────
-TICKERS         = ["NVDA","AAPL","MSFT","TSLA","AMD",
-                   "ADBE","SCHW","DE","FANG","PLTR"]
-REFRESH_MS      = 1_800_000        # auto-refresh whole page 30 min
-CACHE_TTL       = 900              # price cache 15 min
-COLLECT_EVERY   = 3 * 3600         # refetch Reddit every 3 h
-POST_LIMIT      = 50               # posts / ticker / fetch
-POSTS_CSV       = "reddit_posts_scored.csv"
-SENTS_CSV       = "reddit_sentiments.csv"
+# ─── settings ──────────────────────────────────────────────────────
+TICKERS         = ["NVDA","AMD","ADBE","VRTX","SCHW",
+                   "CROX","DE","FANG","TMUS","PLTR"]
+SUBS            = ["stocks","investing","wallstreetbets"]
+HEADERS         = {"User-Agent": "Mozilla/5.0 (StockDashBot/0.1)"}
 
-# ─── (optional) Tron background style ─────────────────────────────
+REFRESH_MS      = 1_800_000      # page ↻ 30 min
+PRICE_CACHE_TTL = 900            # price cache 15 min
+COLLECT_EVERY   = 3 * 3600       # refetch Reddit every 3 h
+POST_LIMIT      = 40             # per subreddit
+
+POSTS_CSV  = "reddit_posts_scored.csv"
+SENTS_CSV  = "reddit_sentiments.csv"
+
+# ─── optional Tron background ──────────────────────────────────────
 st.set_page_config("⚡️ Quant Sentiment", "📈", layout="wide")
 if os.path.exists("tron.png"):
     b64 = base64.b64encode(open("tron.png","rb").read()).decode()
@@ -27,7 +31,7 @@ if os.path.exists("tron.png"):
       <style>
         body,.stApp{{
           background:linear-gradient(rgba(0,0,0,.9),rgba(0,0,0,.9)),
-                     url("data:image/png;base64,{b64}") center/cover fixed;
+          url("data:image/png;base64,{b64}") center/cover fixed;
           color:#fff;font-family:Arial}}
         h1{{color:#0ff;text-align:center;text-shadow:0 0 6px #0ff}}
         .stSidebar{{background:rgba(0,0,30,.93);border-right:2px solid #0ff}}
@@ -52,97 +56,84 @@ with st.sidebar:
     show_de = st.checkbox("Debt / Equity",     True)
     show_ev = st.checkbox("EV / EBITDA",       True)
 
-# ─── 0 · collect & score Reddit if needed ──────────────────────────
-def collect_and_score_if_needed():
-    """Run only if SENTS_CSV missing or older than COLLECT_EVERY sec."""
-    if os.path.exists(SENTS_CSV) and (time.time() - os.path.getmtime(SENTS_CSV) < COLLECT_EVERY):
-        return                                              # fresh enough
-
-    st.info("⏳ Fetching fresh Reddit posts…")
+# ─── 0 · fetch+score Reddit if cache stale ─────────────────────────
+def fetch_reddit_posts(ticker: str, limit=POST_LIMIT):
     rows = []
-    subs = "stocks,investing,wallstreetbets"
-    base = "https://api.pushshift.io/reddit/search/submission/"
-    for sym in TICKERS:
+    for sub in SUBS:
+        url = (f"https://www.reddit.com/r/{sub}/search.json"
+               f"?q={ticker}&restrict_sr=1&sort=new&limit={limit}")
         try:
-            res = requests.get(base, params={
-                "q": sym, "subreddit": subs,
-                "after": "7d", "size": POST_LIMIT, "sort": "desc"
-            }, timeout=10)
-            data = res.json().get("data", [])
+            resp = requests.get(url, headers=HEADERS, timeout=10)
+            if resp.status_code != 200:
+                time.sleep(1); continue
+            for child in resp.json().get("data", {}).get("children", []):
+                d = child["data"]
+                rows.append({
+                    "ticker": ticker,
+                    "title":  d.get("title",""),
+                    "text":   d.get("selftext",""),
+                    "score":  d.get("score",0),
+                    "utc":    d.get("created_utc",0),
+                    "sub":    sub
+                })
         except Exception:
-            data = []
-        for d in data:
-            rows.append({
-                "ticker": sym,
-                "title":  d.get("title",""),
-                "text":   d.get("selftext",""),
-                "score":  d.get("score",0),
-                "utc":    d.get("created_utc",0)
-            })
-        time.sleep(1)                                     # polite pause
+            pass
+        time.sleep(1)                        # avoid 429
+    return rows
 
-    if not rows:
-        st.warning("Reddit fetch failed — presets will be used.")
+def collect_if_needed():
+    if os.path.exists(SENTS_CSV) and time.time() - os.path.getmtime(SENTS_CSV) < COLLECT_EVERY:
         return
-
+    st.info("⏳ Collecting fresh Reddit posts…")
+    rows = []
+    for sym in TICKERS:
+        rows += fetch_reddit_posts(sym)
+    if not rows:
+        st.warning("Reddit fetch failed (no posts)."); return
     df = pd.DataFrame(rows)
     sia = SentimentIntensityAnalyzer()
-    df["sentiment"] = (df["title"].fillna("") + " " + df["text"].fillna("")
-                      ).apply(lambda t: (TextBlob(t).sentiment.polarity +
-                                         sia.polarity_scores(t)["compound"])/2)
+    def hybrid(row):
+        txt = f'{row["title"]} {row["text"]}'
+        return ((TextBlob(txt).sentiment.polarity +
+                 sia.polarity_scores(txt)["compound"]) / 2)
+    df["sentiment"] = df.apply(hybrid, axis=1)
     df.to_csv(POSTS_CSV, index=False)
-    avg = df.groupby("ticker")["sentiment"].mean().round(4).reset_index()
-    avg.to_csv(SENTS_CSV, index=False)
+    df.groupby("ticker")["sentiment"].mean().round(4).reset_index(
+        ).to_csv(SENTS_CSV, index=False)
     st.success("✅ Reddit CSVs updated.")
 
-collect_and_score_if_needed()
+collect_if_needed()
 
-# ─── 1 · load sentiment CSV or presets ─────────────────────────────
+# ─── 1 · load sentiment CSV (neutral if missing) ───────────────────
 try:
     sent_df = pd.read_csv(SENTS_CSV)
+    sent_val = float(sent_df.loc[sent_df["ticker"] == tkr, "sentiment"].values[0])
 except Exception:
-    sent_df = pd.DataFrame({"ticker":[], "sentiment":[]})
+    sent_val = 0.0
+sent_rating = "A" if sent_val>0.20 else "C" if sent_val<-0.20 else "B"
 
-row = sent_df[sent_df["ticker"] == tkr]
-if row.empty:
-    PRESET = {"avg": 0.0, "rating":"B"}        # neutral default
-    sent_val   = PRESET["avg"]
-    sent_rating = PRESET["rating"]
-else:
-    sent_val   = float(row["sentiment"])
-    sent_rating = "A" if sent_val>0.20 else "C" if sent_val<-0.20 else "B"
-
-# posts table (if CSV present)
 try:
     df_posts = (pd.read_csv(POSTS_CSV)
-                  .query("ticker == @tkr")[["title","score"]]
-                  .head(20))
+                  .query("ticker == @tkr")[["title","score"]].head(20))
 except Exception:
     df_posts = pd.DataFrame()
 
 # ─── 2 · price & indicators (robust) ───────────────────────────────
-@st.cache_data(ttl=CACHE_TTL)
-def load_price(tkr: str, start: dt.date, end: dt.date):
-    raw = yf.download(tkr, start=start, end=end+dt.timedelta(days=1),
+@st.cache_data(ttl=PRICE_CACHE_TTL)
+def load_price(sym: str, start: dt.date, end: dt.date):
+    raw = yf.download(sym, start=start, end=end+dt.timedelta(days=1),
                       progress=False, group_by="ticker")
     if raw.empty: return None
-
     if isinstance(raw.columns, pd.MultiIndex):
-        raw = raw.xs(tkr, level=0, axis=1)
-        raw.columns = raw.columns.str.strip()
-
+        raw = raw.xs(sym, level=0, axis=1).rename(columns=str.strip)
     df = raw.copy()
     if "Adj Close" not in df.columns:
-        if "Close" in df.columns:
-            df["Adj Close"] = df["Close"]
-        else:
-            raise KeyError("Neither 'Adj Close' nor 'Close' in yfinance data.")
-
+        df["Adj Close"] = df["Close"]
     df["SMA_20"] = df["Adj Close"].rolling(20).mean()
     df["MACD"]   = df["Adj Close"].ewm(12).mean() - df["Adj Close"].ewm(26).mean()
-    delta        = df["Adj Close"].diff()
-    rs           = delta.clip(lower=0).rolling(14).mean() / (
-                   -delta.clip(upper=0).rolling(14).mean()).replace(0,np.nan)
+    delta = df["Adj Close"].diff()
+    rs    = delta.clip(lower=0).rolling(14).mean() / (
+            -delta.clip(upper=0).rolling(14).mean()).replace(0,np.nan)
     df["RSI"]    = 100 - 100/(1+rs)
     std          = df["Adj Close"].rolling(20).std()
     df["BB_Upper"]=df["SMA_20"] + 2*std
@@ -150,28 +141,27 @@ def load_price(tkr: str, start: dt.date, end: dt.date):
     return df
 
 today = dt.date.today()
-delta = {"1W":7,"1M":30,"6M":180,"1Y":365}.get(tf,365)
-start = dt.date(today.year,1,1) if tf=="YTD" else today - dt.timedelta(days=delta)
-
+delta_days = {"1W":7,"1M":30,"6M":180,"1Y":365}.get(tf,365)
+start = dt.date(today.year,1,1) if tf=="YTD" else today - dt.timedelta(days=delta_days)
 price = load_price(tkr, start, today)
 if price is None: st.error("Price data error"); st.stop()
 last = price.iloc[-1]
 
-# fundamentals
+# fundamentals (fast_info→info)
 @st.cache_data(ttl=86_400)
-def fundamentals(t):
-    info = yf.Ticker(t).info
+def fundamentals(sym):
+    info = yf.Ticker(sym).info
     return dict(pe=info.get("trailingPE",np.nan),
                 de=info.get("debtToEquity",np.nan),
                 ev=info.get("enterpriseToEbitda",np.nan))
 fund = fundamentals(tkr)
 
-# ─── 3 · blend scoring ─────────────────────────────────────────────
+# ─── 3 · blended score ─────────────────────────────────────────────
 tech = 0.0
-if show_sma and "SMA_20" in last: tech += 1 if last["Adj Close"]>last["SMA_20"] else -1
-if show_macd and "MACD" in last:  tech += 1 if last["MACD"]>0 else -1
-if show_rsi and "RSI" in last:    tech += 1 if 40<last["RSI"]<70 else -1
-if show_bb and {"BB_Upper","BB_Lower"}.issubset(last.index):
+if show_sma: tech += 1 if last["Adj Close"]>last["SMA_20"] else -1
+if show_macd: tech += 1 if last["MACD"]>0 else -1
+if show_rsi: tech += 1 if 40<last["RSI"]<70 else -1
+if show_bb:
     tech += 0.5 if last["Adj Close"]>last["BB_Upper"] else 0
     tech -= 0.5 if last["Adj Close"]<last["BB_Lower"] else 0
 if show_pe and not np.isnan(fund["pe"]): tech += 1   if fund["pe"]<18 else -1
@@ -183,7 +173,7 @@ ver,color = ("BUY","springgreen") if blend>2 else ("SELL","salmon") if blend<-2 
 
 # ─── 4 · UI tabs ───────────────────────────────────────────────────
 tab_v, tab_ta, tab_f, tab_r = st.tabs(
-    ["🏁 Verdict","📈 Technical","📊 Fundamentals","🗣️ Reddit / Preset"])
+    ["🏁 Verdict","📈 Technical","📊 Fundamentals","🗣️ Reddit"])
 
 with tab_v:
     st.header("Overall Verdict")
@@ -198,17 +188,12 @@ with tab_v:
 with tab_ta:
     df = price.loc[start:today]
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df.index,y=df["Adj Close"],name="Price",
-                             line=dict(color="#0ff")))
-    if show_sma: fig.add_trace(go.Scatter(x=df.index,y=df["SMA_20"],name="SMA-20",
-                                          line=dict(color="#ff0",dash="dash")))
+    fig.add_trace(go.Scatter(x=df.index,y=df["Adj Close"],name="Price",line=dict(color="#0ff")))
+    if show_sma: fig.add_trace(go.Scatter(x=df.index,y=df["SMA_20"],name="SMA-20",line=dict(color="#ff0",dash="dash")))
     if show_bb:
-        fig.add_trace(go.Scatter(x=df.index,y=df["BB_Upper"],name="Upper BB",
-                                 line=dict(color="#0f0",dash="dot")))
-        fig.add_trace(go.Scatter(x=df.index,y=df["BB_Lower"],name="Lower BB",
-                                 line=dict(color="#0f0",dash="dot")))
-    fig.update_layout(template="plotly_dark",height=350,
-                      title="Price / SMA / Bollinger")
+        fig.add_trace(go.Scatter(x=df.index,y=df["BB_Upper"],name="Upper BB",line=dict(color="#0f0",dash="dot")))
+        fig.add_trace(go.Scatter(x=df.index,y=df["BB_Lower"],name="Lower BB",line=dict(color="#0f0",dash="dot")))
+    fig.update_layout(template="plotly_dark",height=350,title="Price / SMA / Bollinger")
     st.plotly_chart(fig,use_container_width=True)
     if show_macd: st.line_chart(df["MACD"],height=200)
     if show_rsi:  st.line_chart(df["RSI"],height=200)
@@ -216,11 +201,13 @@ with tab_ta:
 with tab_f:
     st.header("Key Ratios")
     st.table(pd.DataFrame({
-        "Metric": ["P/E","Debt / Equity","EV / EBITDA"],
-        "Value":  [fund["pe"],fund["de"],fund["ev"]]
+        "Metric":["P/E","Debt / Equity","EV / EBITDA"],
+        "Value":[fund["pe"],fund["de"],fund["ev"]]
     }).set_index("Metric"))
 
 with tab_r:
-    st.header("Latest Reddit Mentions (live or preset)")
+    st.header("Latest Reddit Mentions")
     if not df_posts.empty:
         st.dataframe(df_posts, hide_index=True, use_container_width=True)
+    else:
+        st.info("No recent posts for this ticker.")
