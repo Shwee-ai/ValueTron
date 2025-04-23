@@ -1,44 +1,47 @@
 # ═══════════════════════════════════════════════════════════════════
-#  Quant-Sentiment Dashboard   ·   2025-04-23
-#  Reddit JSON → Pushshift → CSV fallback  |  robust yfinance loader
+#  ValueTron – Quant-Sentiment Dashboard
+#  v2025-04-23  (error-free, single-file edition)
 # ═══════════════════════════════════════════════════════════════════
-import streamlit as st, pandas as pd, numpy as np
-import plotly.graph_objects as go
+
+import streamlit as st, pandas as pd, numpy as np, plotly.graph_objects as go
 import yfinance as yf, requests, time, datetime as dt, os
 from textblob import TextBlob
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from streamlit_autorefresh import st_autorefresh
 
-# ─── constants ────────────────────────────────────────────────────
-TICKERS        = ["NVDA","AMD","ADBE","VRTX","SCHW","CROX","DE",
-                  "FANG","TMUS","PLTR"]
-SUBS           = ["stocks","investing","wallstreetbets"]
-UA             = {"User-Agent":"Mozilla/5.0 (QuantDash/0.6)"}
-COLLECT_EVERY  = 3*3600            # recache Reddit every 3 h
-POST_LIMIT     = 40                # per subreddit
-POSTS_CSV      = "reddit_posts.csv"
-SENTS_CSV      = "reddit_sentiments.csv"
-PRICE_TTL      = 900               # 15 min price cache
+# ─── constants ─────────────────────────────────────────────────────
+TICKERS       = ["NVDA","AMD","ADBE","VRTX","SCHW","CROX","DE","FANG","TMUS","PLTR"]
+SUBS          = ["stocks","investing","wallstreetbets"]
+UA            = {"User-Agent": "Mozilla/5.0 (ValueTron/1.0)"}
 
-# ─── page config ──────────────────────────────────────────────────
-st.set_page_config("⚡️ Quant Sentiment", "📈", layout="wide")
-st.markdown("<h1 style='text-align:center'>⚡️ Quant Sentiment</h1>",
-            unsafe_allow_html=True)
-st_autorefresh(interval=1_800_000, key="auto")          # auto-refresh 30 min
+COLLECT_EVERY = 3 * 3600               # recache Reddit every 3 h
+POST_LIMIT    = 40                     # posts per subreddit
+POSTS_CSV     = "reddit_posts.csv"     # fallback files you uploaded
+SENTS_CSV     = "reddit_sentiments.csv"
+PRICE_TTL     = 900                    # 15-minute yfinance cache
 
-# ─── sidebar ──────────────────────────────────────────────────────
+# ─── Streamlit page setup ──────────────────────────────────────────
+st.set_page_config("📈 ValueTron", "⚡️", layout="wide")
+st.markdown("<h1 style='text-align:center'>⚡️ ValueTron</h1>", unsafe_allow_html=True)
+st_autorefresh(interval=1_800_000, key="auto")              # auto-refresh 30 min
+
+# ─── sidebar ───────────────────────────────────────────────────────
 with st.sidebar:
-    tf  = st.selectbox("Timeframe", ["1W","1M","6M","YTD","1Y"], index=1)
-    tkr = st.selectbox("Ticker", TICKERS, index=0)
-    tech_w = st.slider("Technical Weight %", 0, 100, 60); sent_w = 100-tech_w
-    show_sma  = st.checkbox("SMA-20", True);  show_macd = st.checkbox("MACD", True)
-    show_rsi  = st.checkbox("RSI", True);     show_bb   = st.checkbox("Bollinger Bands", True)
-    st.markdown("---")
-    show_pe = st.checkbox("P/E", True);       show_de  = st.checkbox("Debt/Equity", True)
-    show_ev = st.checkbox("EV/EBITDA", True)
+    tf  = st.selectbox("Timeframe", ["1W","1M","6M","YTD","1Y"], 1)
+    tkr = st.selectbox("Ticker", TICKERS, 0)
 
-# ─── 0 · Reddit collect + CSV refresh (silent) ────────────────────
-def reddit_rows(sym: str):
+    tech_w = st.slider("Technical Weight %", 0, 100, 60); sent_w = 100 - tech_w
+    show_sma  = st.checkbox("SMA-20", True)
+    show_macd = st.checkbox("MACD",   True)
+    show_rsi  = st.checkbox("RSI",    True)
+    show_bb   = st.checkbox("Bollinger Bands", True)
+    st.markdown("---")
+    show_pe = st.checkbox("P/E",          True)
+    show_de = st.checkbox("Debt / Equity",True)
+    show_ev = st.checkbox("EV / EBITDA",  True)
+
+# ─── 0  Reddit fetch ▸ score ▸ CSV refresh (silent) ────────────────
+def reddit_rows(sym: str) -> list[dict]:
     rows = []
     # 1) official Reddit JSON
     for sub in SUBS:
@@ -63,8 +66,7 @@ def reddit_rows(sym: str):
         url = (f"{base}?q={sym}&subreddit={sub}"
                f"&after=7d&size={POST_LIMIT}&sort=desc")
         try:
-            data = requests.get(url, timeout=10).json().get("data", [])
-            for d in data:
+            for d in requests.get(url, timeout=10).json().get("data", []):
                 rows.append({"ticker": sym,
                              "title":  d.get("title", ""),
                              "text":   d.get("selftext", ""),
@@ -76,10 +78,9 @@ def reddit_rows(sym: str):
 def refresh_reddit_cache():
     if (os.path.exists(SENTS_CSV)
         and time.time() - os.path.getmtime(SENTS_CSV) < COLLECT_EVERY):
-        return                              # still fresh
+        return                            # cached sentiment still fresh
     rows = [r for sym in TICKERS for r in reddit_rows(sym)]
-    if not rows:                            # keep previous CSVs
-        return
+    if not rows: return                   # keep previous CSVs
     df = pd.DataFrame(rows)
     sia = SentimentIntensityAnalyzer()
     df["sentiment"] = (df["title"].fillna("") + " " + df["text"].fillna("")
@@ -91,7 +92,7 @@ def refresh_reddit_cache():
 
 refresh_reddit_cache()
 
-# ─── 1 · load sentiment (CSV fallback) ─────────────────────────────
+# ─── 1  Load sentiment (CSV fallback) ──────────────────────────────
 try:
     sent_val = float(pd.read_csv(SENTS_CSV).set_index("ticker").at[tkr, "sentiment"])
 except: sent_val = 0.0
@@ -102,23 +103,25 @@ try:
                   .query("ticker == @tkr")[["title", "score"]].head(20))
 except: df_posts = pd.DataFrame()
 
-# ─── 2 · price + technical indicators (bullet-proof) ───────────────
+# ─── 2  Price + technical indicators (bullet-proof) ────────────────
 @st.cache_data(ttl=PRICE_TTL)
 def load_price(sym: str, start: dt.date, end: dt.date):
     raw = yf.download(sym, start=start, end=end + dt.timedelta(days=1),
                       progress=False, auto_adjust=False)
     if raw.empty:
         return None
-    # a) flatten MultiIndex by keeping the field part
+    # flatten MultiIndex (if any) by taking the field part
     if isinstance(raw.columns, pd.MultiIndex):
         raw.columns = raw.columns.map(lambda x: x[1])
-    # b) normalise names
     raw.columns = raw.columns.str.replace(" ", "").str.lower()
-    # c) choose first column containing 'close'
-    close_cols = [c for c in raw.columns if "close" in c]
-    base = close_cols[0] if close_cols else raw.select_dtypes("number").columns[0]
+
+    # choose first column that contains 'close'
+    close_candidates = [c for c in raw.columns if "close" in c]
+    base = close_candidates[0] if close_candidates else raw.select_dtypes("number").columns[0]
+
     df = raw.copy().rename(columns={base: "adjclose"})
     df["Adj Close"] = df["adjclose"]
+
     # indicators
     df["SMA_20"] = df["Adj Close"].rolling(20).mean()
     df["MACD"]   = df["Adj Close"].ewm(12).mean() - df["Adj Close"].ewm(26).mean()
@@ -127,13 +130,13 @@ def load_price(sym: str, start: dt.date, end: dt.date):
           (-delta.clip(upper=0).rolling(14).mean()).replace(0, np.nan))
     df["RSI"] = 100 - 100/(1 + rs)
     std = df["Adj Close"].rolling(20).std()
-    df["BB_Upper"] = df["SMA_20"] + 2 * std
-    df["BB_Lower"] = df["SMA_20"] - 2 * std
+    df["BB_Upper"] = df["SMA_20"] + 2*std
+    df["BB_Lower"] = df["SMA_20"] - 2*std
     return df
 
 today  = dt.date.today()
-n_days = {"1W":7, "1M":30, "6M":180, "1Y":365}.get(tf, 365)
-start  = dt.date(today.year, 1, 1) if tf == "YTD" else today - dt.timedelta(days=n_days)
+days   = {"1W":7,"1M":30,"6M":180,"1Y":365}.get(tf, 365)
+start  = dt.date(today.year,1,1) if tf == "YTD" else today - dt.timedelta(days=days)
 price  = load_price(tkr, start, today)
 if price is None:
     st.error("Price data unavailable."); st.stop()
@@ -147,7 +150,7 @@ def fundamentals(sym):
             "ev": info.get("enterpriseToEbitda", np.nan)}
 fund = fundamentals(tkr)
 
-# ─── 3 · blended score ─────────────────────────────────────────────
+# ─── 3  Blended score ─────────────────────────────────────────────
 tech = 0
 if show_sma:  tech += 1 if last["Adj Close"] > last["SMA_20"] else -1
 if show_macd: tech += 1 if last["MACD"] > 0 else -1
@@ -163,7 +166,7 @@ blend = tech_w/100 * tech + sent_w/100 * sent_val
 ver, color = ("BUY", "springgreen") if blend > 2 else \
              ("SELL", "salmon")     if blend < -2 else ("HOLD", "khaki")
 
-# ─── 4 · UI ───────────────────────────────────────────────────────
+# ─── 4  UI ─────────────────────────────────────────────────────────
 tab_v, tab_ta, tab_f, tab_r = st.tabs(
     ["🏁 Verdict", "📈 Technical", "📊 Fundamentals", "🗣️ Reddit"])
 
@@ -171,10 +174,10 @@ with tab_v:
     st.markdown(f"<h2 style='color:{color};text-align:center'>{ver}</h2>",
                 unsafe_allow_html=True)
     c1,c2,c3,c4 = st.columns(4)
-    c1.metric("Tech Score", f"{tech:.2f}")
+    c1.metric("Tech Score",  f"{tech:.2f}")
     c2.metric("Sent Rating", sent_rating)
-    c3.metric("Sent Score", f"{sent_val:.2f}")
-    c4.metric("Blended", f"{blend:.2f}")
+    c3.metric("Sent Score",  f"{sent_val:.2f}")
+    c4.metric("Blended",     f"{blend:.2f}")
     st.caption(f"{tech_w}% Tech + {sent_w}% Sentiment")
 
 with tab_ta:
@@ -196,7 +199,7 @@ with tab_ta:
 
 with tab_f:
     st.table(pd.DataFrame({
-        "Metric": ["P/E", "Debt/Equity", "EV/EBITDA"],
+        "Metric": ["P/E", "Debt / Equity", "EV / EBITDA"],
         "Value":  [fund["pe"], fund["de"], fund["ev"]]
     }).set_index("Metric"))
 
