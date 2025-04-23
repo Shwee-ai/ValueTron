@@ -9,6 +9,31 @@ import plotly.graph_objects as go
 from textblob import TextBlob
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from streamlit_autorefresh import st_autorefresh
+import base64, pathlib, streamlit as st  # put these at the very top
+
+# ─── PAGE CONFIG (must remain first Streamlit call) ────────────────
+st.set_page_config(page_title="📈 ValueTron",
+                   page_icon="⚡️",
+                   layout="wide")
+
+# ─── TRON BACKGROUND CSS  (add right after page_config) ────────────
+img_path = pathlib.Path("tron.png")
+if img_path.exists():
+    with open(img_path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode()
+
+    st.markdown(f"""
+    <style>
+    /* Full-page background ------------------------------------------------ */
+    body, .stApp {{
+        background: linear-gradient(rgba(0,0,0,0.80), rgba(0,0,0,0.80)),
+                    url("data:image/png;base64,{b64}") center/cover fixed no-repeat;
+    }}
+    /* Optional: remove Streamlit header/footer whitespace */
+    header {{visibility:hidden;}}
+    footer {{visibility:hidden;}}
+    </style>
+    """, unsafe_allow_html=True)
 
 # ─── CONFIG ────────────────────────────────────────────────────────
 TICKERS = ["NVDA","AMD","ADBE","VRTX","SCHW",
