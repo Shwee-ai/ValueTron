@@ -222,7 +222,10 @@ with tab_f:
 
 with tab_r:
     st.header("Latest Reddit Mentions")
-    if df_posts.empty:
-        st.info("No recent posts.")
-    else:
-        st.dataframe(df_posts, hide_index=True, use_container_width=True)
+
+    if not df_posts.empty:          # show table only when we have rows
+        st.dataframe(
+            df_posts,
+            hide_index=True,
+            use_container_width=True
+        )
