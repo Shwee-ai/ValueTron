@@ -1,67 +1,60 @@
 # ═══════════════════════════════════════════════════════════════════
-#  Quant-Sentiment Dashboard  |  Reddit → Pushshift → CSV fallback
-#  Paste this file as app.py
+#  Quant-Sentiment Dashboard   |   Reddit → Pushshift → CSV fallback
+#  (robust yfinance loader — no KeyError)
 # ═══════════════════════════════════════════════════════════════════
-import streamlit as st, pandas as pd, numpy as np
-import plotly.graph_objects as go
+import streamlit as st, pandas as pd, numpy as np, plotly.graph_objects as go
 import yfinance as yf, requests, time, datetime as dt, os
 from textblob import TextBlob
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from streamlit_autorefresh import st_autorefresh
 
-# ─── constants ─────────────────────────────────────────────────────
-TICKERS        = ["NVDA","AMD","ADBE","VRTX","SCHW","CROX","DE","FANG","TMUS","PLTR"]
-SUBS           = ["stocks","investing","wallstreetbets"]
-UA             = {"User-Agent":"Mozilla/5.0 (QuantDash/0.3)"}
-COLLECT_EVERY  = 3*3600        # seconds; refresh Reddit cache
-POST_LIMIT     = 40            # per subreddit
-POSTS_CSV      = "reddit_posts.csv"
-SENTS_CSV      = "reddit_sentiments.csv"
-PRICE_TTL      = 900           # seconds
+# ─── constants ────────────────────────────────────────────────────
+TICKERS = ["NVDA","AMD","ADBE","VRTX","SCHW","CROX","DE","FANG","TMUS","PLTR"]
+SUBS    = ["stocks","investing","wallstreetbets"]
+UA      = {"User-Agent":"Mozilla/5.0 (QuantDash/0.3)"}
+COLLECT_EVERY = 3*3600           # refresh Reddit cache every 3 h
+POST_LIMIT    = 40               # per subreddit
+POSTS_CSV     = "reddit_posts.csv"
+SENTS_CSV     = "reddit_sentiments.csv"
+PRICE_TTL     = 900              # cache price 15 min
 
-# ─── page settings ────────────────────────────────────────────────
+# ─── page config ──────────────────────────────────────────────────
 st.set_page_config("⚡️ Quant Sentiment", "📈", layout="wide")
 st.markdown("<h1 style='text-align:center'>⚡️ Quant Sentiment</h1>", unsafe_allow_html=True)
-st_autorefresh(interval=1_800_000, key="auto")          # full page refresh 30 min
+st_autorefresh(interval=1_800_000, key="auto")      # full page refresh 30 min
 
-# ─── sidebar ───────────────────────────────────────────────────────
+# ─── sidebar ──────────────────────────────────────────────────────
 with st.sidebar:
     tf  = st.selectbox("Timeframe", ["1W","1M","6M","YTD","1Y"], 1)
     tkr = st.selectbox("Ticker", TICKERS, 0)
-    tech_w = st.slider("Technical Weight %", 0, 100, 60)
-    sent_w = 100 - tech_w
-    show_sma  = st.checkbox("SMA-20", True)
-    show_macd = st.checkbox("MACD",   True)
-    show_rsi  = st.checkbox("RSI",    True)
-    show_bb   = st.checkbox("Bollinger Bands", True)
+    tech_w = st.slider("Technical Weight %", 0, 100, 60); sent_w = 100-tech_w
+    show_sma  = st.checkbox("SMA-20", True); show_macd = st.checkbox("MACD", True)
+    show_rsi  = st.checkbox("RSI", True);   show_bb   = st.checkbox("Bollinger Bands", True)
     st.markdown("---")
-    show_pe = st.checkbox("P/E",          True)
-    show_de = st.checkbox("Debt / Equity",True)
-    show_ev = st.checkbox("EV / EBITDA",  True)
+    show_pe = st.checkbox("P/E", True); show_de = st.checkbox("Debt / Equity", True)
+    show_ev = st.checkbox("EV / EBITDA", True)
 
-# ─── 0 | fetch + score Reddit (silent) ─────────────────────────────
-def reddit_rows(symbol: str) -> list[dict]:
+# ─── 0 · Reddit fetch & score (silent) ────────────────────────────
+def reddit_rows(sym: str):
     rows = []
-    # 1) official Reddit JSON
-    for sub in SUBS:
-        url = f"https://www.reddit.com/r/{sub}/search.json?q={symbol}&restrict_sr=1&sort=new&limit={POST_LIMIT}&raw_json=1"
+    for sub in SUBS:                                        # 1) official JSON
+        url = f"https://www.reddit.com/r/{sub}/search.json?q={sym}&restrict_sr=1&sort=new&limit={POST_LIMIT}&raw_json=1"
         try:
             r = requests.get(url, headers=UA, timeout=10)
             if r.status_code == 200:
                 for c in r.json().get("data", {}).get("children", []):
-                    d = c["data"]
-                    rows.append({"ticker":symbol,"title":d.get("title",""),
-                                 "text":d.get("selftext",""),"score":d.get("score",0)})
+                    d = c["data"]; rows.append({"ticker":sym,"title":d.get("title",""),
+                                                 "text":d.get("selftext",""),"score":d.get("score",0)})
         except: pass
         time.sleep(0.4)
-    if rows: return rows
+    if rows: return rows                                    # success
     # 2) Pushshift fallback
-    push_base = "https://api.pushshift.io/reddit/search/submission/"
+    base = "https://api.pushshift.io/reddit/search/submission/"
     for sub in SUBS:
-        url = f"{push_base}?q={symbol}&subreddit={sub}&after=7d&size={POST_LIMIT}&sort=desc"
+        url = f"{base}?q={sym}&subreddit={sub}&after=7d&size={POST_LIMIT}&sort=desc"
         try:
             for d in requests.get(url, timeout=10).json().get("data", []):
-                rows.append({"ticker":symbol,"title":d.get("title",""),
+                rows.append({"ticker":sym,"title":d.get("title",""),
                              "text":d.get("selftext",""),"score":d.get("score",0)})
         except: pass
         time.sleep(0.3)
@@ -70,20 +63,20 @@ def reddit_rows(symbol: str) -> list[dict]:
 def refresh_reddit_cache():
     if os.path.exists(SENTS_CSV) and time.time() - os.path.getmtime(SENTS_CSV) < COLLECT_EVERY:
         return
-    rows = [row for sym in TICKERS for row in reddit_rows(sym)]
-    if not rows:                                 # leave old CSVs untouched
-        return
+    rows = [r for sym in TICKERS for r in reddit_rows(sym)]
+    if not rows: return                                   # keep old CSVs
     df = pd.DataFrame(rows)
     sia = SentimentIntensityAnalyzer()
     df["sentiment"] = (df["title"].fillna("") + " " + df["text"].fillna("")
-                      ).apply(lambda t: (TextBlob(t).sentiment.polarity +
-                                         sia.polarity_scores(t)["compound"]) / 2)
+                      ).apply(lambda t:(TextBlob(t).sentiment.polarity +
+                                       sia.polarity_scores(t)["compound"])/2)
     df.to_csv(POSTS_CSV, index=False)
-    df.groupby("ticker")["sentiment"].mean().round(4).reset_index().to_csv(SENTS_CSV, index=False)
+    df.groupby("ticker")["sentiment"].mean().round(4).reset_index(
+        ).to_csv(SENTS_CSV, index=False)
 
 refresh_reddit_cache()
 
-# ─── 1 | load sentiment (CSV fallback) ─────────────────────────────
+# ─── 1 · load sentiment (CSV fallback) ─────────────────────────────
 try:
     sent_val = float(pd.read_csv(SENTS_CSV).set_index("ticker").at[tkr,"sentiment"])
 except: sent_val = 0.0
@@ -91,36 +84,40 @@ sent_rating = "A" if sent_val>0.20 else "C" if sent_val<-0.20 else "B"
 
 try:
     df_posts = (pd.read_csv(POSTS_CSV)
-                  .query("ticker == @tkr")[["title","score"]]
-                  .head(20))
+                  .query("ticker == @tkr")[["title","score"]].head(20))
 except: df_posts = pd.DataFrame()
 
-# ─── 2 | price & indicators (robust) ───────────────────────────────
+# ─── 2 · price & indicators (robust) ───────────────────────────────
 @st.cache_data(ttl=PRICE_TTL)
-def load_price(sym,start,end):
-    raw = yf.download(sym,start=start,end=end+dt.timedelta(days=1),progress=False)
+def load_price(sym, start, end):
+    raw = yf.download(sym, start=start, end=end+dt.timedelta(days=1), progress=False)
     if raw.empty: return None
+
+    # flatten any MultiIndex cols
     if isinstance(raw.columns, pd.MultiIndex):
-        raw = raw.xs(sym, level=0, axis=1).rename(columns=str.strip)
+        if sym in raw.columns.get_level_values(0):
+            raw = raw.xs(sym, level=0, axis=1)
+        else:
+            raw.columns = raw.columns.droplevel(0)
+    raw.columns = raw.columns.str.strip()
+
     df = raw.copy()
-    df["Adj Close"] = df.get("Adj Close", df["Close"])
+    if "Adj Close" not in df: df["Adj Close"] = df["Close"]
+
     df["SMA_20"] = df["Adj Close"].rolling(20).mean()
     df["MACD"]   = df["Adj Close"].ewm(12).mean() - df["Adj Close"].ewm(26).mean()
     delta = df["Adj Close"].diff()
-    rs    = delta.clip(lower=0).rolling(14).mean() / (
-            -delta.clip(upper=0).rolling(14).mean()).replace(0,np.nan)
+    rs    = delta.clip(lower=0).rolling(14).mean() / (-delta.clip(upper=0).rolling(14).mean()).replace(0,np.nan)
     df["RSI"] = 100 - 100/(1+rs)
     std = df["Adj Close"].rolling(20).std()
-    df["BB_Upper"] = df["SMA_20"] + 2*std
-    df["BB_Lower"] = df["SMA_20"] - 2*std
+    df["BB_Upper"] = df["SMA_20"] + 2*std; df["BB_Lower"] = df["SMA_20"] - 2*std
     return df
 
 today = dt.date.today()
-days = {"1W":7,"1M":30,"6M":180,"1Y":365}.get(tf,365)
+days  = {"1W":7,"1M":30,"6M":180,"1Y":365}.get(tf,365)
 start = dt.date(today.year,1,1) if tf=="YTD" else today-dt.timedelta(days=days)
 price = load_price(tkr,start,today)
-if price is None:
-    st.error("Price data unavailable."); st.stop()
+if price is None: st.error("Price data unavailable."); st.stop()
 last = price.iloc[-1]
 
 @st.cache_data(ttl=86_400)
@@ -131,14 +128,14 @@ def fundamentals(sym):
             "ev":info.get("enterpriseToEbitda",np.nan)}
 fund = fundamentals(tkr)
 
-# ─── 3 | blended score ─────────────────────────────────────────────
+# ─── 3 · blended score ─────────────────────────────────────────────
 tech = 0
 if show_sma:  tech += 1 if last["Adj Close"]>last["SMA_20"] else -1
 if show_macd: tech += 1 if last["MACD"]>0 else -1
 if show_rsi:  tech += 1 if 40<last["RSI"]<70 else -1
 if show_bb:
-    tech += 0.5 if last["Adj Close"]>last["BB_Upper"] else 0
-    tech -= 0.5 if last["Adj Close"]<last["BB_Lower"] else 0
+    tech += .5 if last["Adj Close"]>last["BB_Upper"] else 0
+    tech -= .5 if last["Adj Close"]<last["BB_Lower"] else 0
 if show_pe and not np.isnan(fund["pe"]): tech += 1 if fund["pe"]<18 else -1
 if show_de and not np.isnan(fund["de"]): tech += .5 if fund["de"]<1 else -.5
 if show_ev and not np.isnan(fund["ev"]): tech += 1 if fund["ev"]<12 else -1
@@ -146,7 +143,7 @@ if show_ev and not np.isnan(fund["ev"]): tech += 1 if fund["ev"]<12 else -1
 blend = tech_w/100*tech + sent_w/100*sent_val
 ver,color = ("BUY","springgreen") if blend>2 else ("SELL","salmon") if blend<-2 else ("HOLD","khaki")
 
-# ─── 4 | UI ────────────────────────────────────────────────────────
+# ─── 4 · UI tabs ───────────────────────────────────────────────────
 tab_v, tab_ta, tab_f, tab_r = st.tabs(["🏁 Verdict","📈 Technical","📊 Fundamentals","🗣️ Reddit"])
 
 with tab_v:
