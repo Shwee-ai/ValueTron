@@ -1,3 +1,4 @@
+import base64, pathlib, streamlit as st  # put these at the very top
 import os, time
 import datetime as dt
 import requests
@@ -9,7 +10,7 @@ import plotly.graph_objects as go
 from textblob import TextBlob
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from streamlit_autorefresh import st_autorefresh
-import base64, pathlib, streamlit as st  # put these at the very top
+
 
 # ─── PAGE CONFIG (must remain first Streamlit call) ────────────────
 st.set_page_config(page_title="📈 ValueTron",
