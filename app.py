@@ -202,4 +202,4 @@ with tab_ta:
     st.plotly_chart(fig, use_container_width=True)
 
     if show_macd and "MACD" in df.columns: st.line_chart(df["MACD"], height=200)
-    if show_rsi  and "RSI"  in df.columns: st.line_chart(df["
+    if show_rsi and "RSI" in df.columns: st.line_chart(df["RSI"], height=200)
