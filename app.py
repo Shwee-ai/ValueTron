@@ -11,7 +11,22 @@ from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from streamlit_autorefresh import st_autorefresh
 
 # ─── CONFIG ────────────────────────────────────────────────────────
-TICKERS     = ["NVDA","AMD","ADBE","VRTX","SCHW","CROX","DE","FANG","TMUS","PLTR"]
+TICKERS = ["NVDA","AMD","ADBE","VRTX","SCHW",
+           "CROX","DE","FANG","TMUS","PLTR"]
+# pretty-print names
+FULLNAME = {
+    "NVDA": "NVIDIA",
+    "AMD":  "Advanced Micro Devices",
+    "ADBE": "Adobe",
+    "VRTX": "Vertex Pharma",
+    "SCHW": "Charles Schwab",
+    "CROX": "Crocs",
+    "DE":   "Deere & Co.",
+    "FANG": "Diamondback Energy",
+    "TMUS": "T-Mobile US",
+    "PLTR": "Palantir"
+}
+
 SUBS        = ["stocks","investing","wallstreetbets"]
 UA          = {"User-Agent":"Mozilla/5.0 (ValueTron/1.5)"}
 REFRESH_SEC = 3 * 3600       # refresh Reddit every 3 h
@@ -27,7 +42,9 @@ st_autorefresh(interval=30 * 60 * 1000, key="reload")  # reload every 30 min
 # ─── SIDEBAR ───────────────────────────────────────────────────────
 with st.sidebar:
     tf     = st.selectbox("Timeframe", ["1W","1M","6M","YTD","1Y"], index=1)
-    tkr    = st.selectbox("Ticker", TICKERS, index=0)
+    label_list = [f"{sym} ({FULLNAME[sym]})" for sym in TICKERS]
+    choice     = st.selectbox("Ticker", label_list, index=0)
+    tkr        = choice.split()[0]          # extract raw ticker, e.g. "GME"
     tech_w = st.slider("Technical Weight %", 0, 100, 60)
     sent_w = 100 - tech_w
 
@@ -188,6 +205,42 @@ with tab_v:
     c2.metric("Sent Rating", sent_rating)
     c3.metric("Sent Score", f"{sent_val:.2f}")
     c4.metric("Blended", f"{blend:.2f}")
+
+    # --- Verdict Explanation ----------------------------------------
+explanation_parts = []
+
+# Technical side
+if tech > 0:
+    explanation_parts.append(
+        f"Technical indicators are net **bullish** (+{tech:.1f}).")
+elif tech < 0:
+    explanation_parts.append(
+        f"Technical indicators are net **bearish** ({tech:.1f}).")
+else:
+    explanation_parts.append("Technical indicators are **neutral** (0).")
+
+# Sentiment side
+if sent_val > 0.05:
+    explanation_parts.append(
+        f"Reddit sentiment is **positive** (+{sent_val:.2f}).")
+elif sent_val < -0.05:
+    explanation_parts.append(
+        f"Reddit sentiment is **negative** ({sent_val:.2f}).")
+else:
+    explanation_parts.append(
+        "Reddit sentiment is **neutral**.")
+
+# Blend comment
+explanation_parts.append(
+    f"Blending {tech_w}% technical with {sent_w}% sentiment yields "
+    f"a combined score of **{blend:.2f}**, resulting in a **{ver}** signal.")
+
+# Show the paragraph
+st.markdown(
+    " ".join(explanation_parts),
+    unsafe_allow_html=False
+)
+
 with tab_ta:
     dfp = price.loc[start:today]
     fig = go.Figure()
@@ -203,8 +256,27 @@ with tab_ta:
 with tab_f:
     rat = pd.DataFrame({ 'Metric':['P/E','Debt / Equity','EV / EBITDA'], 'Value':[fund['pe'],fund['de'],fund['ev']] }).set_index('Metric')
     st.table(rat)
+# ─── Reddit Tab ────────────────────────────────────────────────
 with tab_r:
+
+    st.markdown("### Community Pulse (Reddit)")
+
+    # 1) scoreboard of A / B / C ratings
+    counts = posts_df["rating"].value_counts().reindex(["A", "B", "C"], fill_value=0)
+    cA, cB, cC = st.columns(3)
+    cA.metric("A  ➜  Positive",   counts["A"])
+    cB.metric("B  ➜  Neutral",    counts["B"])
+    cC.metric("C  ➜  Negative",   counts["C"])
+
+    # 2) friendly explainer
+    st.caption(
+        "Each post’s TextBlob-&-VADER score is weighted by up-votes. "
+        "Scores > +0.05 = **A**, < –0.05 = **C**, otherwise **B**."
+    )
+
+    # 3) renamed table, limited to 20 newest rows
     if posts_df.empty:
-        st.info('No Reddit posts.')
+        st.info("No Reddit posts found.")
     else:
-        st.dataframe(posts_df, hide_index=True, use_container_width=True)
+        posts_nice = posts_df.rename(columns={"title": "Reddit Post Title"})
+        st.dataframe(posts_nice, hide_index=True, use_container_width=True)
