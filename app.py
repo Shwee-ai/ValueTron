@@ -94,16 +94,22 @@ def fundamentals(tkr):
     return dict(pe=pe, de=de, ev=ev)
 
 # -------- reddit ---------- (new, uses .json + Pushshift)
+# ------------------------------------------------------------------
+# Replace the previous reddit_sentiment() with this Pushshift-only one
+# ------------------------------------------------------------------
 @st.cache_data(ttl=CACHE_TTL)
-def reddit_sentiment(tkr):
+def reddit_sentiment(tkr: str):
     """
-    Uses Pushshift only (stable JSON). Returns:
-        avg_sentiment, letter_rating, dataframe(title, score)
+    Pull last 50 posts that mention the ticker (plain or $ticker) from
+    /r/stocks, /r/investing, /r/wallstreetbets via Pushshift.
+    Works without Reddit API quota and rarely returns 429/403.
+    Returns: (avg_score, letter_rating, DataFrame[title, score])
     """
     url = (
         "https://api.pushshift.io/reddit/search/submission/"
-        f"?q={tkr}&subreddit=stocks,investing,wallstreetbets"
-        "&fields=title,selftext,score&sort=desc&size=100"
+        f"?q=\"{tkr}\"|\"${tkr}\""
+        "&subreddit=stocks,investing,wallstreetbets"
+        "&sort=desc&size=50"
     )
     try:
         data = requests.get(url, timeout=10).json().get("data", [])
@@ -115,16 +121,24 @@ def reddit_sentiment(tkr):
         return 0.0, "B", pd.DataFrame()
 
     sia = SentimentIntensityAnalyzer()
-    def hybrid(d):
-        txt   = f"{d.get('title','')} {d.get('selftext','')}"
+
+    def hybrid(row):
+        txt   = f'{row.get("title","")} {row.get("selftext","")}'
         base  = (TextBlob(txt).sentiment.polarity +
                  sia.polarity_scores(txt)["compound"]) / 2
-        return base * min(d.get("score", 0), 100) / 100
+        return base * min(row.get("score", 0), 100) / 100
 
-    avg = sum(hybrid(x) for x in data) / len(data)
+    scores = [hybrid(r) for r in data]
+    avg    = sum(scores) / len(scores)
     rating = "A" if avg > 0.2 else "C" if avg < -0.2 else "B"
-    df = pd.DataFrame([{"title":x["title"], "score":x["score"]} for x in data])
+
+    df = pd.DataFrame({
+        "title":  [d.get("title","")  for d in data],
+        "score":  [d.get("score",0)   for d in data]
+    })
+
     return avg, rating, df
+
 
 # ---- helper calls (must precede scoring) ----
 fund = fundamentals(tkr)
