@@ -96,45 +96,35 @@ def fundamentals(tkr):
 # -------- reddit ---------- (new, uses .json + Pushshift)
 @st.cache_data(ttl=CACHE_TTL)
 def reddit_sentiment(tkr):
-    hdr  = {"User-Agent":"QuantDash/0.1"}
-    subs = ["stocks","investing","wallstreetbets"]; posts=[]
-    for sub in subs:
-        for q in (tkr, f"${tkr}"):
-            url = (f"https://www.reddit.com/r/{sub}/search.json"
-                   f"?q={q}&restrict_sr=1&limit=30&sort=new&raw_json=1")
-            try:
-                js = requests.get(url, headers=hdr, timeout=10).json()
-                posts += [{
-                    "title":  c["data"].get("title",""),
-                    "text":   c["data"].get("selftext",""),
-                    "score":  c["data"].get("score",0)
-                } for c in js.get("data",{}).get("children",[])]
-            except Exception as e:
-                st.warning(f"Reddit fetch failed {sub} {q}: {e}")
+    """
+    Uses Pushshift only (stable JSON). Returns:
+        avg_sentiment, letter_rating, dataframe(title, score)
+    """
+    url = (
+        "https://api.pushshift.io/reddit/search/submission/"
+        f"?q={tkr}&subreddit=stocks,investing,wallstreetbets"
+        "&fields=title,selftext,score&sort=desc&size=100"
+    )
+    try:
+        data = requests.get(url, timeout=10).json().get("data", [])
+    except Exception as e:
+        st.warning(f"Pushshift fetch failed: {e}")
+        return 0.0, "B", pd.DataFrame()
 
-    # fallback to Pushshift if empty
-    if not posts:
-        url=(f"https://api.pushshift.io/reddit/search/submission/"
-             f"?q={tkr}&subreddit=stocks,investing,wallstreetbets&sort=desc&size=50")
-        try:
-            ps=requests.get(url,timeout=10).json().get("data",[])
-            posts=[{"title":p.get("title",""),"text":p.get("selftext",""),
-                    "score":p.get("score",0)} for p in ps]
-        except Exception: pass
+    if not data:
+        return 0.0, "B", pd.DataFrame()
 
-    if not posts:
-        return 0.0,"B",pd.DataFrame()
+    sia = SentimentIntensityAnalyzer()
+    def hybrid(d):
+        txt   = f"{d.get('title','')} {d.get('selftext','')}"
+        base  = (TextBlob(txt).sentiment.polarity +
+                 sia.polarity_scores(txt)["compound"]) / 2
+        return base * min(d.get("score", 0), 100) / 100
 
-    sia=SentimentIntensityAnalyzer()
-    def hybrid(p):
-        txt=f"{p['title']} {p['text']}"
-        base=(TextBlob(txt).sentiment.polarity + sia.polarity_scores(txt)["compound"])/2
-        return base*min(p["score"],100)/100
-
-    avg = sum(hybrid(p) for p in posts)/len(posts)
-    rating = "A" if avg>0.2 else "C" if avg<-0.2 else "B"
-    df = pd.DataFrame([{"title":p["title"],"score":p["score"]} for p in posts])
-    return avg,rating,df
+    avg = sum(hybrid(x) for x in data) / len(data)
+    rating = "A" if avg > 0.2 else "C" if avg < -0.2 else "B"
+    df = pd.DataFrame([{"title":x["title"], "score":x["score"]} for x in data])
+    return avg, rating, df
 
 # ---- helper calls (must precede scoring) ----
 fund = fundamentals(tkr)
