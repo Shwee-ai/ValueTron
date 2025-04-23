@@ -1,43 +1,47 @@
 # ═══════════════════════════════════════════════════════════════════
-#  Quant-Sentiment Dashboard   |   Reddit → Pushshift → CSV fallback
-#  (robust yfinance loader — no KeyError)
+#  Quant-Sentiment Dashboard  ·  v2025-04-23
+#  Reddit JSON → Pushshift → CSV fallback  +  Robust yfinance loader
 # ═══════════════════════════════════════════════════════════════════
-import streamlit as st, pandas as pd, numpy as np, plotly.graph_objects as go
+import streamlit as st, pandas as pd, numpy as np
+import plotly.graph_objects as go
 import yfinance as yf, requests, time, datetime as dt, os
 from textblob import TextBlob
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 from streamlit_autorefresh import st_autorefresh
 
-# ─── constants ────────────────────────────────────────────────────
+# ─── constants ─────────────────────────────────────────────────────
 TICKERS = ["NVDA","AMD","ADBE","VRTX","SCHW","CROX","DE","FANG","TMUS","PLTR"]
 SUBS    = ["stocks","investing","wallstreetbets"]
-UA      = {"User-Agent":"Mozilla/5.0 (QuantDash/0.3)"}
-COLLECT_EVERY = 3*3600           # refresh Reddit cache every 3 h
-POST_LIMIT    = 40               # per subreddit
+UA      = {"User-Agent":"Mozilla/5.0 (QuantDash/0.4)"}
+COLLECT_EVERY = 3*3600
+POST_LIMIT    = 40
 POSTS_CSV     = "reddit_posts.csv"
 SENTS_CSV     = "reddit_sentiments.csv"
-PRICE_TTL     = 900              # cache price 15 min
+PRICE_TTL     = 900            # 15 min price cache
 
-# ─── page config ──────────────────────────────────────────────────
+# ─── page config ───────────────────────────────────────────────────
 st.set_page_config("⚡️ Quant Sentiment", "📈", layout="wide")
 st.markdown("<h1 style='text-align:center'>⚡️ Quant Sentiment</h1>", unsafe_allow_html=True)
-st_autorefresh(interval=1_800_000, key="auto")      # full page refresh 30 min
+st_autorefresh(interval=1_800_000, key="auto")   # 30 min auto-refresh
 
-# ─── sidebar ──────────────────────────────────────────────────────
+# ─── sidebar ───────────────────────────────────────────────────────
 with st.sidebar:
     tf  = st.selectbox("Timeframe", ["1W","1M","6M","YTD","1Y"], 1)
     tkr = st.selectbox("Ticker", TICKERS, 0)
     tech_w = st.slider("Technical Weight %", 0, 100, 60); sent_w = 100-tech_w
-    show_sma  = st.checkbox("SMA-20", True); show_macd = st.checkbox("MACD", True)
-    show_rsi  = st.checkbox("RSI", True);   show_bb   = st.checkbox("Bollinger Bands", True)
+    show_sma  = st.checkbox("SMA-20", True)
+    show_macd = st.checkbox("MACD",   True)
+    show_rsi  = st.checkbox("RSI",    True)
+    show_bb   = st.checkbox("Bollinger Bands", True)
     st.markdown("---")
     show_pe = st.checkbox("P/E", True); show_de = st.checkbox("Debt / Equity", True)
     show_ev = st.checkbox("EV / EBITDA", True)
 
-# ─── 0 · Reddit fetch & score (silent) ────────────────────────────
+# ─── 0 · Reddit collect → score (silent) ───────────────────────────
 def reddit_rows(sym: str):
     rows = []
-    for sub in SUBS:                                        # 1) official JSON
+    # 1) reddit JSON
+    for sub in SUBS:
         url = f"https://www.reddit.com/r/{sub}/search.json?q={sym}&restrict_sr=1&sort=new&limit={POST_LIMIT}&raw_json=1"
         try:
             r = requests.get(url, headers=UA, timeout=10)
@@ -47,7 +51,7 @@ def reddit_rows(sym: str):
                                                  "text":d.get("selftext",""),"score":d.get("score",0)})
         except: pass
         time.sleep(0.4)
-    if rows: return rows                                    # success
+    if rows: return rows
     # 2) Pushshift fallback
     base = "https://api.pushshift.io/reddit/search/submission/"
     for sub in SUBS:
@@ -64,7 +68,7 @@ def refresh_reddit_cache():
     if os.path.exists(SENTS_CSV) and time.time() - os.path.getmtime(SENTS_CSV) < COLLECT_EVERY:
         return
     rows = [r for sym in TICKERS for r in reddit_rows(sym)]
-    if not rows: return                                   # keep old CSVs
+    if not rows: return
     df = pd.DataFrame(rows)
     sia = SentimentIntensityAnalyzer()
     df["sentiment"] = (df["title"].fillna("") + " " + df["text"].fillna("")
@@ -84,26 +88,38 @@ sent_rating = "A" if sent_val>0.20 else "C" if sent_val<-0.20 else "B"
 
 try:
     df_posts = (pd.read_csv(POSTS_CSV)
-                  .query("ticker == @tkr")[["title","score"]].head(20))
+                  .query("ticker == @tkr")[["title","score"]]
+                  .head(20))
 except: df_posts = pd.DataFrame()
 
-# ─── 2 · price & indicators (robust) ───────────────────────────────
+# ─── 2 · price + indicators (bullet-proof) ─────────────────────────
 @st.cache_data(ttl=PRICE_TTL)
-def load_price(sym, start, end):
+def load_price(sym: str, start: dt.date, end: dt.date):
     raw = yf.download(sym, start=start, end=end+dt.timedelta(days=1), progress=False)
     if raw.empty: return None
 
-    # flatten any MultiIndex cols
+    # flatten any MultiIndex
     if isinstance(raw.columns, pd.MultiIndex):
-        if sym in raw.columns.get_level_values(0):
-            raw = raw.xs(sym, level=0, axis=1)
-        else:
-            raw.columns = raw.columns.droplevel(0)
+        raw.columns = raw.columns.map(lambda x: x[1])  # keep the field only
     raw.columns = raw.columns.str.strip()
 
+    # normalise to lowercase keys for lookup
+    lc_map = {c.lower().replace(" ", ""): c for c in raw.columns}
     df = raw.copy()
-    if "Adj Close" not in df: df["Adj Close"] = df["Close"]
 
+    # choose best available close column
+    if "adjclose" in lc_map:
+        base_col = lc_map["adjclose"]
+    elif "close*" in lc_map:
+        base_col = lc_map["close*"]
+    elif "close" in lc_map:
+        base_col = lc_map["close"]
+    else:                                 # fallback to the 3rd numeric column
+        base_col = df.select_dtypes("number").columns[2]
+
+    df["Adj Close"] = df[base_col]
+
+    # indicators
     df["SMA_20"] = df["Adj Close"].rolling(20).mean()
     df["MACD"]   = df["Adj Close"].ewm(12).mean() - df["Adj Close"].ewm(26).mean()
     delta = df["Adj Close"].diff()
@@ -117,7 +133,8 @@ today = dt.date.today()
 days  = {"1W":7,"1M":30,"6M":180,"1Y":365}.get(tf,365)
 start = dt.date(today.year,1,1) if tf=="YTD" else today-dt.timedelta(days=days)
 price = load_price(tkr,start,today)
-if price is None: st.error("Price data unavailable."); st.stop()
+if price is None:
+    st.error("Price data unavailable."); st.stop()
 last = price.iloc[-1]
 
 @st.cache_data(ttl=86_400)
@@ -143,17 +160,17 @@ if show_ev and not np.isnan(fund["ev"]): tech += 1 if fund["ev"]<12 else -1
 blend = tech_w/100*tech + sent_w/100*sent_val
 ver,color = ("BUY","springgreen") if blend>2 else ("SELL","salmon") if blend<-2 else ("HOLD","khaki")
 
-# ─── 4 · UI tabs ───────────────────────────────────────────────────
-tab_v, tab_ta, tab_f, tab_r = st.tabs(["🏁 Verdict","📈 Technical","📊 Fundamentals","🗣️ Reddit"])
+# ─── 4 · UI ────────────────────────────────────────────────────────
+tab_v,tab_ta,tab_f,tab_r = st.tabs(["🏁 Verdict","📈 Technical","📊 Fundamentals","🗣️ Reddit"])
 
 with tab_v:
-    st.markdown(f"<h2 style='color:{color};text-align:center'>{ver}</h2>", unsafe_allow_html=True)
+    st.markdown(f"<h2 style='color:{color};text-align:center'>{ver}</h2>",unsafe_allow_html=True)
     c1,c2,c3,c4 = st.columns(4)
     c1.metric("Tech Score",f"{tech:.2f}")
     c2.metric("Sent Rating",sent_rating)
     c3.metric("Sent Score",f"{sent_val:.2f}")
     c4.metric("Blended",f"{blend:.2f}")
-    st.caption(f"{tech_w}% Tech  +  {sent_w}% Sentiment")
+    st.caption(f"{tech_w}% Tech + {sent_w}% Sentiment")
 
 with tab_ta:
     df = price.loc[start:today]
