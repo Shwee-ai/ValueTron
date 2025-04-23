@@ -183,7 +183,7 @@ ver, color = ("BUY","springgreen") if blend>2 else ("SELL","salmon") if blend<-2
 
 # ─── UI tabs ───────────────────────────────────────────────────────
 tab_v, tab_ta, tab_f, tab_r = st.tabs(
-    ["🏁 Verdict","📈 Technical","📊 Fundamentals","🗣️ Reddit / Preset"])
+    ["🏁 Verdict","📈 Technical","📊 Fundamentals","🗣️ Reddit"])
 
 with tab_v:
     st.header("Overall Verdict")
@@ -223,6 +223,6 @@ with tab_f:
     }).set_index("Metric"))
 
 with tab_r:
-    st.header("Latest Reddit Mentions (live or preset)")
+    st.header("Latest Reddit Mentions")
     if not df_posts.empty:
         st.dataframe(df_posts, hide_index=True, use_container_width=True)
